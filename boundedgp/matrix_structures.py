@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import tensorflow as tf
-from gpflow import settings
 from functools import reduce
-float_type = settings.dtypes.float_type
+
+import gpflow
+import tensorflow as tf
 import numpy as np
 
+float_type = gpflow.default_float()
 
 class BlockDiagMat_many:
     def __init__(self, mats):

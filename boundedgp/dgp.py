@@ -12,21 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import gpflow
-import numpy as np
-import tensorflow as tf
-#import scipy.io as spio
 from math import gamma
 from functools import reduce
 
-from gpflow.decors import params_as_tensors
-from gpflow.decors import name_scope
+import gpflow
+import numpy as np
+import tensorflow as tf
 
-from gpflow import settings
-float_type = settings.dtypes.float_type
-from .matrix_structures import DiagMat
+from matrix_structures import DiagMat
+from domain import gp_domain
 
-from .domain import gp_domain
+float_type = gpflow.default_float()
 
 class DGP(gpflow.models.GPModel):
     """
@@ -50,57 +46,54 @@ class DGP(gpflow.models.GPModel):
         pos = gpflow.transforms.positive
         self.q_sqrt = gpflow.params.Parameter(np.ones(ms), pos)
 
-    @name_scope('KL')
-    @params_as_tensors
     def build_KL(self):
         """
         We're working in a 'whitened' representation, so this is the KL between
         q(u) and N(0, 1)
         """
-        Kuu = self.make_Kuu(self.kern, self.num_input)
-        Kim = Kuu.solve(self.q_mu)
-        KL = 0.5*tf.squeeze(tf.matmul(tf.transpose(Kim), self.q_mu))  # Mahalanobis term
-        KL += 0.5 * Kuu.trace_KiX(tf.diag(tf.square(tf.reshape(self.q_sqrt, [-1]))))
-        KL += -0.5*tf.cast(tf.size(self.q_mu), float_type)  # Constant term.
-        KL += -0.5*tf.reduce_sum(tf.log(tf.square(self.q_sqrt)))  # Log det Q
-        KL += 0.5*Kuu.logdet()  # Log det P
+        with tf.name_scope('KL'):
+            Kuu = self.make_Kuu(self.kern, self.num_input)
+            Kim = Kuu.solve(self.q_mu)
+            KL = 0.5*tf.squeeze(tf.matmul(tf.transpose(Kim), self.q_mu))  # Mahalanobis term
+            KL += 0.5 * Kuu.trace_KiX(tf.diag(tf.square(tf.reshape(self.q_sqrt, [-1]))))
+            KL += -0.5*tf.cast(tf.size(self.q_mu), float_type)  # Constant term.
+            KL += -0.5*tf.reduce_sum(tf.log(tf.square(self.q_sqrt)))  # Log det Q
+            KL += 0.5*Kuu.logdet()  # Log det P
         return KL
 
-    @name_scope('likelihood')
-    @params_as_tensors
     def _build_likelihood(self):
-        # compute the mean and variance of the latent function
-        self.predictFlag = 0
-        f_mu, f_var = self._build_predict(self.X, full_cov=False)
-        self.predictFlag = 1
+        with tf.name_scope('likelihood'):
+            # compute the mean and variance of the latent function
+            self.predictFlag = 0
+            f_mu, f_var = self._build_predict(self.X, full_cov=False)
+            self.predictFlag = 1
 
-        E_lik = self.likelihood.variational_expectations(f_mu, f_var, self.Y)
-        return tf.reduce_sum(E_lik) - self.build_KL()  
+            E_lik = self.likelihood.variational_expectations(f_mu, f_var, self.Y)
+            ll = tf.reduce_sum(E_lik) - self.build_KL()  
+        return ll
 
-    @name_scope('predict')
-    @params_as_tensors
     def _build_predict(self, X, full_cov=False):    
-        Kuf = self.make_Kuf(X)
-        Kuu = self.make_Kuu(self.kern, self.num_input)
-        KiKuf = Kuu.solve(Kuf)
+        with tf.name_scope('predict'):
+            Kuf = self.make_Kuf(X)
+            Kuu = self.make_Kuu(self.kern, self.num_input)
+            KiKuf = Kuu.solve(Kuf)
 
-        mu = tf.matmul(tf.transpose(KiKuf), self.q_mu)
-        tmp1 = tf.expand_dims(self.q_sqrt, 1) * KiKuf
-        if full_cov:
-            # Kff
-            var = self.kern.K(X)
-            var = var + tf.matmul(tf.transpose(tmp1), tmp1)  # Projected variance Kfu Ki S Ki Kuf
-            var = var - tf.matmul(tf.transpose(Kuf), KiKuf)  # Qff
-            var = tf.expand_dims(var, 2)
+            mu = tf.matmul(tf.transpose(KiKuf), self.q_mu)
+            tmp1 = tf.expand_dims(self.q_sqrt, 1) * KiKuf
+            if full_cov:
+                # Kff
+                var = self.kern.K(X)
+                var = var + tf.matmul(tf.transpose(tmp1), tmp1)  # Projected variance Kfu Ki S Ki Kuf
+                var = var - tf.matmul(tf.transpose(Kuf), KiKuf)  # Qff
+                var = tf.expand_dims(var, 2)
 
-        else:
-            var = self.kern.Kdiag(X)  # Kff
-            var = var + tf.reduce_sum(tf.square(tmp1), 0)  # Projected variance Kfu Ki [A + WWT] Ki Kuf
-            var = var - tf.reduce_sum(Kuf * KiKuf, 0)  # Qff
-            var = tf.reshape(var, (-1, 1))
+            else:
+                var = self.kern.Kdiag(X)  # Kff
+                var = var + tf.reduce_sum(tf.square(tmp1), 0)  # Projected variance Kfu Ki [A + WWT] Ki Kuf
+                var = var - tf.reduce_sum(Kuf * KiKuf, 0)  # Qff
+                var = tf.reshape(var, (-1, 1))
         return mu, var
     
-    #@params_as_tensors
     def make_Kuf(self, X):
         """
         Make a representation of the Kuf matrices.
